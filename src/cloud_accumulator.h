@@ -87,6 +87,7 @@ class CloudAccumulator
   CloudVisualizer viewer_;
   boost::thread viewer_thread_;
   ros::Time last_pose_stamp_;
+  ros::Publisher cloud_pub_;
 };
 
 }//namespace rc

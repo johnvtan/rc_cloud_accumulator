@@ -11,6 +11,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <boost/lexical_cast.hpp>
+#include <Eigen/Geometry>
 
 namespace rc
 {
@@ -26,7 +27,7 @@ inline geometry_msgs::TransformStamped myPoseStampedMsgToTF(const geometry_msgs:
   bt.transform.translation.z = msg.pose.position.z;
   bt.header.stamp = msg.header.stamp;
   bt.header.frame_id = msg.header.frame_id;
-  bt.child_frame_id = "camera";
+  bt.child_frame_id = "guidance";
   return bt;
 }
 
@@ -40,7 +41,9 @@ inline Eigen::Affine3f toAffine(const geometry_msgs::TransformStamped& tf_stampe
   result.translation() << t.x, t.y, t.z;
   Eigen::Quaternionf rot(q.w, q.x, q.y, q.z);
   result.rotate(rot);
-  return result;
+  Eigen::AngleAxisf y_rotation = Eigen::AngleAxisf(0.5*M_PI, Eigen::Vector3f::UnitY());
+  Eigen::AngleAxisf x_rotation = Eigen::AngleAxisf(M_PI, Eigen::Vector3f::UnitX());
+  return result * x_rotation * y_rotation;
 }
 
 
@@ -96,6 +99,9 @@ CloudAccumulator::CloudAccumulator(double voxelgrid_size_display,
     viewer_thread_(boost::ref(viewer_))
 {
   viewer_.addCloudToViewer(display_cloud_);//so update can be called
+
+  ros::NodeHandle nh;
+  cloud_pub_ = nh.advertise<pointcloud_t>("/rc_cloud_accumulator/cloud", 1);
   ROS_INFO("Distance filter range: %.2fm - %.2fm", min_distance_, max_distance_);
   ROS_INFO("Voxel grid filter for display: %.3fm", voxelgrid_size_display_);
   ROS_INFO("Voxel grid filter for saving:  %.3fm", voxelgrid_size_save_);
@@ -121,10 +127,16 @@ void CloudAccumulator::pointCloudCallback(const pointcloud_t::ConstPtr& pointclo
     pcl::transformPointCloud(*cropped_cloud, *transformed_cloud, transformation);
 
     boost::mutex::scoped_lock guard(display_cloud_mutex_);
+
+    voxelGridFilter(0.01, transformed_cloud, transformed_cloud);
+
     *transformed_cloud += *display_cloud_;
     //Voxelgridfilter to speedup display
-    voxelGridFilter(voxelgrid_size_display_, transformed_cloud, display_cloud_);
+    voxelGridFilter(0.01, transformed_cloud, display_cloud_);
     viewer_.updateCloudInViewer(display_cloud_);
+
+    display_cloud_->header.frame_id = "map";
+    cloud_pub_.publish(display_cloud_);
     ROS_INFO_ONCE("Change view to start displaying the clouds.");
   }
   else if(num_poses_ == 0)
@@ -176,10 +188,10 @@ Eigen::Affine3f CloudAccumulator::lookupTransform(double timestamp)
     {
       {//lock-scope
         boost::mutex::scoped_lock guard(tf_buffer_mutex_);
-        if(tf_buffer_.canTransform("world", "camera", rosstamp))
+        if(tf_buffer_.canTransform("map", "guidance", rosstamp))
         {
           geometry_msgs::TransformStamped pose;
-          Eigen::Affine3f result = toAffine(tf_buffer_.lookupTransform("world", "camera", rosstamp)); //target, source
+          Eigen::Affine3f result = toAffine(tf_buffer_.lookupTransform("map", "guidance", rosstamp)); //target, source
           return result;
         }
       }
